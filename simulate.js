@@ -123,25 +123,21 @@ function doPlay(state, player, handIdx, stats) {
   }
 }
 
-// Alimenta criatura (Tiempo si fresh, Alimentar si no)
+// Alimentar: siempre cuesta 2, bloquea criaturas fresh (Tiempo es automático en doEndTurn)
 function doFeed(state, player, uid, stats) {
   const p = state[player]
   const idx = p.board.findIndex(c => c.uid === uid)
   if (idx < 0) return null
   const c = p.board[idx]
   const card = LIB[c.cardId]
-  if (!card.next || c.fed) return null
-
-  const isFree = c.fresh
-  if (!isFree && p.biomasa < 2) return null
+  if (!card.next || c.fed || c.fresh || p.biomasa < 2) return null
 
   const evolved = { ...c, cardId: card.next, fed:true, fresh:false, hasAtk:false }
 
   if (stats) {
     const cs = cardStat(stats, card.id)
     cs.evolved++
-    if (isFree) stats.tiempoUsed++
-    else        stats.alimentarUsed++
+    stats.alimentarUsed++
   }
 
   const newBoard = [...p.board]
@@ -151,7 +147,7 @@ function doFeed(state, player, uid, stats) {
   } else {
     newBoard[idx] = evolved
   }
-  return { ...state, [player]: { ...p, board:newBoard, biomasa: p.biomasa - (isFree ? 0 : 2) } }
+  return { ...state, [player]: { ...p, board:newBoard, biomasa: p.biomasa - 2 } }
 }
 
 // Ataca criatura rival
@@ -222,8 +218,8 @@ function doAttackFace(state, attPlayer, attUid, stats) {
   }
 }
 
-// Termina el turno: cambia active y prepara al siguiente jugador
-function doEndTurn(state) {
+// Termina el turno: cambia active, auto-Tiempo para criaturas fresh del siguiente jugador
+function doEndTurn(state, stats = null) {
   const cur  = state.active
   const next = opp(cur)
   const np   = state[next]
@@ -232,21 +228,21 @@ function doEndTurn(state) {
   let deck = [...np.deck], hand = [...np.hand]
   if (deck.length) hand.push(deck.shift())
 
-  // Al jugador SIGUIENTE le limpiamos hasAtk, canAtk y resetemos fresh/fed
-  // trapped NO se limpia aquí — se limpia cuando el jugador ACTUAL termina su turno
-  const nextBoard = np.board.map(c => ({
-    ...c, hasAtk:false, canAtk:true, fed:false, fresh:false,
-  }))
+  // Auto-Tiempo: criaturas fresh con next evolucionan al inicio del próximo turno
+  const nextBoard = np.board.map(c => {
+    if (c.fresh && LIB[c.cardId].next) {
+      if (stats) { cardStat(stats, c.cardId).evolved++; stats.tiempoUsed++ }
+      return { ...c, cardId:LIB[c.cardId].next, fresh:false, fed:false, hasAtk:false, canAtk:true }
+    }
+    return { ...c, hasAtk:false, canAtk:true, fed:false, fresh:false }
+  }).filter(c => life(c) > 0)
 
-  // Al jugador ACTUAL le limpiamos trapped (su turno acabó, el trap duró lo que tenía que durar)
   const curP = state[cur]
   const curBoard = curP.board.map(c => ({ ...c, trapped:false }))
 
-  const newTurn = next === 'M' ? state.turn + 1 : state.turn
-
   return {
     ...state,
-    turn: newTurn,
+    turn: next === 'M' ? state.turn + 1 : state.turn,
     active: next,
     [cur]:  { ...curP, board:curBoard },
     [next]: { ...np, biomasa:newMaxB, maxB:newMaxB, hand, deck, board:nextBoard },
@@ -277,13 +273,7 @@ function stratAggro(state, player, stats) {
     if (idx >= 0) { const ns = doPlay(s, player, idx, stats); if (ns) { s = ns; changed = true } }
   }
 
-  // Tiempo en todo lo que se pueda
-  for (const c of [...p().board]) {
-    if (!s.over && c.fresh && LIB[c.cardId].next) {
-      const ns = doFeed(s, player, c.uid, stats); if (ns) s = ns
-    }
-  }
-
+  // Tiempo es automático en doEndTurn — no se dispara manualmente aquí
   // Atacar cara si no hay criaturas, si no atacar la más débil
   for (const c of [...p().board]) {
     if (s.over) break
@@ -313,12 +303,7 @@ function stratControl(state, player, stats) {
     if (idx >= 0) { const ns = doPlay(s, player, idx, stats); if (ns) { s = ns; changed = true } }
   }
 
-  // Tiempo + Alimentar (si hay biomasa)
-  for (const c of [...p().board]) {
-    if (!s.over && c.fresh && LIB[c.cardId].next) {
-      const ns = doFeed(s, player, c.uid, stats); if (ns) s = ns
-    }
-  }
+  // Tiempo es automático en doEndTurn — Alimentar solo en criaturas que ya pasaron por Tiempo
   for (const c of [...p().board]) {
     if (s.over || p().biomasa < 2) break
     if (!c.fed && !c.fresh && LIB[c.cardId].next) {
@@ -357,14 +342,12 @@ function stratMeta(state, player, stats) {
     if (idx >= 0) { const ns = doPlay(s, player, idx, stats); if (ns) { s = ns; changed = true } }
   }
 
-  // Evolucionar todo lo posible (Tiempo + Alimentar)
+  // Tiempo es automático en doEndTurn — solo Alimentar en criaturas que ya pasaron por Tiempo
   let ec = true
   while (ec && !s.over) {
     ec = false
     for (const c of [...p().board]) {
-      if (c.fed || !LIB[c.cardId].next) continue
-      const isFree = c.fresh
-      if (!isFree && p().biomasa < 2) continue
+      if (c.fed || c.fresh || !LIB[c.cardId].next || p().biomasa < 2) continue
       const ns = doFeed(s, player, c.uid, stats)
       if (ns) { s = ns; ec = true; break }
     }
@@ -394,28 +377,20 @@ function stratTempo(state, player, stats) {
   let s = state
   const p = () => s[player], o = () => s[opp(player)]
 
-  // Jugar dejando 2 de biomasa para Alimentar si hay criaturas fresh
-  const hasFresh = p().board.some(c => c.fresh && LIB[c.cardId].next)
-  const budget   = hasFresh ? Math.max(0, p().biomasa - 2) : p().biomasa
-
   let changed = true
   while (changed && !s.over && p().board.length < 5) {
     changed = false
     const affordable = p().hand
       .map((id, i) => ({ id, i, cost:LIB[id].cost }))
-      .filter(x => x.cost <= (budget > 0 ? budget : p().biomasa))
+      .filter(x => x.cost <= p().biomasa)
       .sort((a, b) => b.cost - a.cost)
     if (affordable.length) {
       const ns = doPlay(s, player, affordable[0].i, stats); if (ns) { s = ns; changed = true }
     }
   }
 
-  // Tiempo siempre
-  for (const c of [...p().board]) {
-    if (!s.over && c.fresh && LIB[c.cardId].next) {
-      const ns = doFeed(s, player, c.uid, stats); if (ns) s = ns
-    }
-  }
+  // Tiempo es automático en doEndTurn — Alimentar en criaturas que ya pasaron por Tiempo
+  for (const c of [...p().board]) if (!s.over && !c.fed && !c.fresh && LIB[c.cardId].next && p().biomasa >= 2) { const ns = doFeed(s, player, c.uid, stats); if (ns) s = ns }
 
   // Atacar: priorizar kills exactos, luego cara
   for (const c of [...p().board]) {
@@ -482,7 +457,7 @@ function runGame(mStrat, aStrat, stats) {
   for (let half = 0; half < MAX_TURNS * 2 && !s.over; half++) {
     const strat = s.active === 'M' ? mStrat : aStrat
     s = strat(s, s.active, stats)
-    if (!s.over) s = doEndTurn(s)
+    if (!s.over) s = doEndTurn(s, stats)
   }
 
   if (!s.over) {

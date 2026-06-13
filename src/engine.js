@@ -270,17 +270,16 @@ export function stratMeta(s, player, stats) {
 export function stratTempo(s, player, stats) {
   let g = s
   const p = () => g[player], o = () => g[opp(player)]
-  const hasFresh = p().board.some(c => c.fresh && LIB[c.cardId].next)
-  const budget = hasFresh ? Math.max(0, p().biomasa - 2) : p().biomasa
   let ch = true
   while (ch && !g.over && p().board.length < 5) {
     ch = false
     const aff = p().hand.map((id,i) => ({ id,i,cost:LIB[id].cost }))
-      .filter(x => x.cost <= (budget > 0 ? budget : p().biomasa))
+      .filter(x => x.cost <= p().biomasa)
       .sort((a,b) => b.cost-a.cost)
     if (aff.length) { const ns = doPlay(g, player, aff[0].i, stats); if (ns) { g = ns; ch = true } }
   }
-  // Tiempo es automático en doEndTurn — no se dispara manualmente aquí
+  // Alimentar criaturas que ya pasaron por Tiempo (non-fresh, non-fed, con next)
+  for (const c of [...p().board]) if (!g.over && !c.fed && !c.fresh && LIB[c.cardId].next && p().biomasa >= 2) { const ns = doFeed(g, player, c.uid, stats); if (ns) g = ns }
   for (const c of [...p().board]) {
     if (g.over) break
     const aC = LIB[c.cardId]

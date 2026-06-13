@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import SimView from './SimView.jsx'
+import CardView from './CardView.jsx'
 
 const NAV = {
   bar: {
@@ -31,8 +32,13 @@ function Root() {
         <button style={NAV.btn(view === 'sim')} onClick={() => setView('sim')}>
           📊 Simulador
         </button>
+        <button style={NAV.btn(view === 'cards')} onClick={() => setView('cards')}>
+          📖 Cartas
+        </button>
       </nav>
-      {view === 'game' ? <App /> : <SimView />}
+      {view === 'game' && <App />}
+      {view === 'sim'  && <SimView />}
+      {view === 'cards' && <CardView />}
     </>
   )
 }
