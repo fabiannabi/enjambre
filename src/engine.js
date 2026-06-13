@@ -102,15 +102,11 @@ export function doFeed(s, player, uid, stats) {
   if (idx < 0) return null
   const c = p.board[idx]
   const card = LIB[c.cardId]
-  if (!card.next || c.fed) return null
-  const isFree = c.fresh
-  if (!isFree && p.biomasa < 2) return null
+  // Tiempo es automático en doEndTurn — Alimentar siempre cuesta 2
+  if (!card.next || c.fed || c.fresh || p.biomasa < 2) return null
 
-  const evolved = { ...c, cardId:card.next, fed:true, fresh:false, hasAtk:false }
-  if (stats) {
-    const cs = cstat(stats, card.id); cs.evolved++
-    if (isFree) stats.tiempoUsed++; else stats.alimentarUsed++
-  }
+  const evolved = { ...c, cardId:card.next, fed:true, hasAtk:false }
+  if (stats) { const cs = cstat(stats, card.id); cs.evolved++; stats.alimentarUsed++ }
   const newBoard = [...p.board]
   if (life(evolved) <= 0) {
     newBoard.splice(idx, 1)
@@ -118,7 +114,7 @@ export function doFeed(s, player, uid, stats) {
   } else {
     newBoard[idx] = evolved
   }
-  return { ...s, [player]: { ...p, board:newBoard, biomasa:p.biomasa - (isFree ? 0 : 2) } }
+  return { ...s, [player]: { ...p, board:newBoard, biomasa:p.biomasa - 2 } }
 }
 
 export function doAttackCreature(s, attP, attUid, defUid, stats) {
@@ -160,18 +156,27 @@ export function doAttackFace(s, attP, attUid, stats) {
   return { ...s, [attP]: { ...ap, board:newBoard }, [o]: { ...s[o], hp:s[o].hp - aC.atk } }
 }
 
-export function doEndTurn(s) {
+export function doEndTurn(s, stats = null) {
   const cur = s.active, next = opp(cur), np = s[next]
   const newMaxB = Math.min(10, np.maxB + 1)
   let deck = [...np.deck], hand = [...np.hand]
   if (deck.length) hand.push(deck.shift())
-  const nextBoard = np.board.map(c => ({ ...c, hasAtk:false, canAtk:true, fed:false, fresh:false }))
-  const curBoard  = s[cur].board.map(c => ({ ...c, trapped:false }))
+
+  // Auto-Tiempo: criaturas fresh con next evolucionan al inicio del próximo turno
+  const nextBoard = np.board.map(c => {
+    if (c.fresh && LIB[c.cardId].next) {
+      if (stats) { cstat(stats, c.cardId).evolved++; stats.tiempoUsed++ }
+      return { ...c, cardId:LIB[c.cardId].next, fresh:false, fed:false, hasAtk:false, canAtk:true }
+    }
+    return { ...c, hasAtk:false, canAtk:true, fed:false, fresh:false }
+  }).filter(c => life(c) > 0)
+
+  const curBoard = s[cur].board.map(c => ({ ...c, trapped:false }))
   return {
     ...s,
     turn: next === 'M' ? s.turn + 1 : s.turn,
     active: next,
-    [cur]:  { ...s[cur],  board:curBoard },
+    [cur]:  { ...s[cur], board:curBoard },
     [next]: { ...np, biomasa:newMaxB, maxB:newMaxB, hand, deck, board:nextBoard },
   }
 }
@@ -192,8 +197,7 @@ export function stratAggro(s, player, stats) {
     const i = pickCard(p().hand, p().biomasa, 'cheap')
     if (i >= 0) { const ns = doPlay(g, player, i, stats); if (ns) { g = ns; ch = true } }
   }
-  for (const c of [...p().board])
-    if (!g.over && c.fresh && LIB[c.cardId].next) { const ns = doFeed(g, player, c.uid, stats); if (ns) g = ns }
+  // Tiempo es automático en doEndTurn — no se dispara manualmente aquí
   for (const c of [...p().board]) {
     if (g.over) break
     if (!c.canAtk || c.hasAtk || c.trapped || LIB[c.cardId].traits.includes('pupa')) continue
@@ -216,7 +220,7 @@ export function stratControl(s, player, stats) {
     const i = pickCard(p().hand, p().biomasa, 'costly')
     if (i >= 0) { const ns = doPlay(g, player, i, stats); if (ns) { g = ns; ch = true } }
   }
-  for (const c of [...p().board]) if (!g.over && c.fresh && LIB[c.cardId].next) { const ns = doFeed(g, player, c.uid, stats); if (ns) g = ns }
+  // Tiempo es automático en doEndTurn — Alimentar solo en criaturas que ya pasaron por Tiempo
   for (const c of [...p().board]) if (!g.over && !c.fed && !c.fresh && LIB[c.cardId].next && p().biomasa >= 2) { const ns = doFeed(g, player, c.uid, stats); if (ns) g = ns }
   for (const c of [...p().board]) {
     if (g.over) break
@@ -240,12 +244,12 @@ export function stratMeta(s, player, stats) {
     const i = pickCard(p().hand, p().biomasa, 'cheap')
     if (i >= 0) { const ns = doPlay(g, player, i, stats); if (ns) { g = ns; ch = true } }
   }
+  // Tiempo es automático en doEndTurn — solo Alimentar en criaturas que ya pasaron por Tiempo
   let ec = true
   while (ec && !g.over) {
     ec = false
     for (const c of [...p().board]) {
-      if (c.fed || !LIB[c.cardId].next) continue
-      if (!c.fresh && p().biomasa < 2) continue
+      if (c.fed || c.fresh || !LIB[c.cardId].next || p().biomasa < 2) continue
       const ns = doFeed(g, player, c.uid, stats); if (ns) { g = ns; ec = true; break }
     }
   }
@@ -276,7 +280,7 @@ export function stratTempo(s, player, stats) {
       .sort((a,b) => b.cost-a.cost)
     if (aff.length) { const ns = doPlay(g, player, aff[0].i, stats); if (ns) { g = ns; ch = true } }
   }
-  for (const c of [...p().board]) if (!g.over && c.fresh && LIB[c.cardId].next) { const ns = doFeed(g, player, c.uid, stats); if (ns) g = ns }
+  // Tiempo es automático en doEndTurn — no se dispara manualmente aquí
   for (const c of [...p().board]) {
     if (g.over) break
     const aC = LIB[c.cardId]
@@ -322,7 +326,7 @@ export function runGame(mStrat, aStrat, stats) {
   let s = initGame()
   for (let half = 0; half < MAX_TURNS * 2 && !s.over; half++) {
     s = (s.active === 'M' ? mStrat : aStrat)(s, s.active, stats)
-    if (!s.over) s = doEndTurn(s)
+    if (!s.over) s = doEndTurn(s, stats)
   }
   if (!s.over) { s = { ...s, over:true, winner: s.M.hp >= s.A.hp ? 'M' : 'A' }; if (stats) stats.draws++ }
   if (stats) {

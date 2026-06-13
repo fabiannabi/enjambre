@@ -158,12 +158,21 @@ export default function App() {
         let pDeck = [...prev.P.deck], pHand = [...prev.P.hand]
         if (pDeck.length) pHand.push(pDeck.shift())
 
-        const newPBoard = pBoard.map(c => ({ ...c, hasAtk:false, canAtk:true, fed:false, fresh:false, trapped:false }))
+        // Auto-Tiempo: larvas fresh evolucionan al inicio del turno del jugador
+        const tiempoMsgs = []
+        const newPBoard = pBoard.map(c => {
+          const card = LIB[c.cardId]
+          if (c.fresh && card.next) {
+            tiempoMsgs.push(`⏱ Tiempo: ${card.name} → ${LIB[card.next].name}.`)
+            return { ...c, cardId:card.next, fresh:false, fed:false, hasAtk:false, canAtk:true, trapped:false }
+          }
+          return { ...c, hasAtk:false, canAtk:true, fed:false, fresh:false, trapped:false }
+        }).filter(c => life(c) > 0)
 
         let phase = 'player', winner = null
         if (pHp <= 0) { phase = 'over'; winner = 'opp' }
 
-        const newLog = [`⟳ Turno ${newTurn}.`, ...msgs, ...prev.log].slice(0, 50)
+        const newLog = [`⟳ Turno ${newTurn}.`, ...tiempoMsgs, ...msgs, ...prev.log].slice(0, 50)
         return {
           ...prev, phase, winner, turn: newTurn,
           P: { ...prev.P, hp:pHp, hand:pHand, deck:pDeck, board:newPBoard, biomasa:newPMaxB, maxB:newPMaxB },
@@ -209,27 +218,20 @@ export default function App() {
       if (idx < 0) return prev
       const c = prev.P.board[idx]
       const card = LIB[c.cardId]
-      if (!card.next || c.fed) return prev
-
-      const isFree = c.fresh
-      if (!isFree && prev.P.biomasa < 2) return prev
+      // Tiempo es automático ahora — Alimentar siempre cuesta 2
+      if (!card.next || c.fed || c.fresh || prev.P.biomasa < 2) return prev
 
       const nextCard = LIB[card.next]
       const newBoard = [...prev.P.board]
       const evolved = { ...c, cardId:card.next, fed:true, fresh:false, hasAtk:false }
-      // remove if damage killed it at new stage (edge case: next stage has lower vida)
       if (life(evolved) <= 0) {
         newBoard.splice(idx, 1)
-        const g = { ...prev, P: { ...prev.P, board:newBoard, biomasa: prev.P.biomasa - (isFree?0:2) } }
+        const g = { ...prev, P: { ...prev.P, board:newBoard, biomasa: prev.P.biomasa - 2 } }
         return addLog(`${nextCard.name} sucumbe al mudar.`, g)
       }
       newBoard[idx] = evolved
-
-      const msg = isFree
-        ? `⏱ Tiempo: ${card.name} → ${nextCard.name} (gratis).`
-        : `Alimentas ${card.name} → ${nextCard.name}. (−2 biomasa)`
-      const g = { ...prev, P: { ...prev.P, board:newBoard, biomasa: prev.P.biomasa - (isFree?0:2) } }
-      return addLog(msg, g)
+      const g = { ...prev, P: { ...prev.P, board:newBoard, biomasa: prev.P.biomasa - 2 } }
+      return addLog(`Alimentas ${card.name} → ${nextCard.name}. (−2 biomasa)`, g)
     })
   }
 
@@ -467,8 +469,7 @@ function Creature({ c, isSelected, isTarget, onClick, onFeed, side, phase }) {
   const card  = LIB[c.cardId]
   const hp    = life(c)
   const isPupa = card.traits.includes('pupa')
-  const canFeed = side === 'player' && card.next && !c.fed
-  const feedFree = c.fresh && card.next
+  const canFeed = side === 'player' && card.next && !c.fed && !c.fresh
   const fColor = card.faction === 'M' ? '#5a8a44' : '#8b3a1a'
 
   let borderColor = '#3a3025'
@@ -500,12 +501,15 @@ function Creature({ c, isSelected, isTarget, onClick, onFeed, side, phase }) {
       </div>
       <TraitBadges traits={card.traits} />
       {c.trapped && <div style={S.badge('#5a3a8a')}>🕸 Atrapado</div>}
+      {c.fresh && card.next && (
+        <div style={S.badge('#1a3a1a')}>⏱ muda al inicio</div>
+      )}
       {canFeed && phase === 'player' && (
         <button
-          style={{ ...S.feedBtn, background: feedFree ? '#3a6a2a' : '#2a3a5a' }}
+          style={{ ...S.feedBtn, background: '#2a3a5a' }}
           onClick={e => { e.stopPropagation(); onFeed() }}
         >
-          {feedFree ? '⏱ Tiempo' : '⬆ Alimentar (2)'}
+          ⬆ Alimentar (2)
         </button>
       )}
       {side === 'player' && c.hasAtk && !isPupa && (
